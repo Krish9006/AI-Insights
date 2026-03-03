@@ -12,19 +12,29 @@ export class UsersService implements OnModuleInit {
     ) { }
 
     async onModuleInit() {
-        // Seed initial SuperAdmin
-        const superAdminExists = await this.accountRepository.findOne({ where: { role: Role.SUPERADMIN } });
-        if (!superAdminExists) {
-            const salt = await bcrypt.genSalt();
-            const hash = await bcrypt.hash('superadmin123', salt);
-            const superAdmin = this.accountRepository.create({
-                email: 'superadmin@kaikaai.com',
+        // Seed or Update SuperAdmin
+        const adminEmail = process.env.SUPERADMIN_EMAIL || 's@gmail.com';
+        const adminPassword = process.env.SUPERADMIN_PASSWORD || '123';
+
+        let superAdmin = await this.accountRepository.findOne({ where: { role: Role.SUPERADMIN } });
+        const salt = await bcrypt.genSalt();
+        const hash = await bcrypt.hash(adminPassword, salt);
+
+        if (!superAdmin) {
+            superAdmin = this.accountRepository.create({
+                email: adminEmail,
                 password: hash,
                 role: Role.SUPERADMIN,
                 isVerified: true
             });
             await this.accountRepository.save(superAdmin);
-            console.log('Seeded default SuperAdmin: superadmin@kaikaai.com / superadmin123');
+            console.log(`Seeded SuperAdmin: ${adminEmail}`);
+        } else {
+            // Update existing if credentials don't match
+            superAdmin.email = adminEmail;
+            superAdmin.password = hash;
+            await this.accountRepository.save(superAdmin);
+            console.log(`Updated SuperAdmin credentials: ${adminEmail}`);
         }
     }
 
@@ -87,5 +97,11 @@ export class UsersService implements OnModuleInit {
 
     async getPendingHrs(): Promise<Account[]> {
         return this.accountRepository.find({ where: { role: Role.HR, isVerified: false } });
+    }
+
+    async getEmployeesByHr(hrId: string): Promise<Account[]> {
+        return this.accountRepository.find({
+            where: { hrCreator: { id: hrId }, role: Role.USER }
+        });
     }
 }

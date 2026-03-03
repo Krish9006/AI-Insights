@@ -50,4 +50,11 @@ export class UsersController {
             email: hr.email
         };
     }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(Role.HR)
+    @Get('employees')
+    async getEmployees(@Request() req) {
+        return this.usersService.getEmployeesByHr(req.user.id);
+    }
 }
