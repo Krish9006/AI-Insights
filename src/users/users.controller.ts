@@ -53,8 +53,154 @@ export class UsersController {
 
     @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles(Role.HR)
+    @Get('hr/team-stats')
+    async getHrStats(@Request() req) {
+        return this.usersService.getHrTeamStats(req.user.id);
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(Role.HR)
     @Get('employees')
     async getEmployees(@Request() req) {
-        return this.usersService.getEmployeesByHr(req.user.id);
+        const accounts = await this.usersService.getEmployeesByHr(req.user.id);
+        return accounts.map((a) => ({
+            id: a.id,
+            employeeId: a.employeeId,
+            role: a.role,
+            assessmentCompleted: a.profile?.isAssessmentCompleted ?? false,
+        }));
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(Role.USER, Role.HR, Role.SUPERADMIN)
+    @Post('chat')
+    async aiCoachingChat(@Request() req, @Body() body: { messages: any[] }) {
+        const accountId = req.user.id;
+        
+        // Ensure there's a conversation to continue
+        if (!body.messages || !Array.isArray(body.messages)) {
+            return { error: 'Messages array is required' };
+        }
+
+        try {
+            // Fetch User Profile to construct Context - Fallback to null if not found
+            let profile: any = null; // Use any to bypass inference for now or properly import type
+            try {
+                profile = await this.usersService.getEmployeeProfile(accountId);
+            } catch (pError) {
+                console.log('Skipping profile context: User has not completed assessment yet.');
+            }
+            
+            const systemPrompt = `You are KaikaAI, an empathetic and specialized AI Mentor for mental health, career guidance, and Ikigai alignment.
+You must absolutely adhere to these rules:
+1. ONLY answer questions related to mental health, self-discovery, Ikigai, career alignment, emotional support, or the user's well-being.
+2. If the user asks general-knowledge questions (e.g., coding, math, history, general trivia), firmly and politely steer the conversation back to their mental or career well-being. NEVER answer a general knowledge question.
+3. Keep responses CONCISE (1-3 paragraphs max). Do not ramble.
+4. GREETINGS: For simple 'Hi', 'Hello', or 'How are you', provide a strictly ONE-LINE enthusiastic response.
+5. Precision & Depth: Only provide detailed, precise analysis when the user is sharing a specific, deep-seated problem. Otherwise, be punchy and supportive.
+6. Be conversational and empathetic. Do not sound like a robot. 
+
+${profile ? `Here is the user's strictly confidential Ikigai Profile context. Use it organically to deeply personalize your advice:
+
+IKIGAI ALIGNMENT SCORES:
+- Passion (Love): ${profile.computedScores?.love || 0}%
+- Profession (Good At): ${profile.computedScores?.goodAt || 0}%
+- Mission (World Needs): ${profile.computedScores?.worldNeeds || 0}%
+- Vocation (Paid For): ${profile.computedScores?.paidFor || 0}%
+
+USER'S DEEP THOUGHTS:
+- What they love: ${profile.freeTextAnswers?.t1 || 'N/A'}
+- What they are good at: ${profile.freeTextAnswers?.t2 || 'N/A'}
+- What problem they want to solve in the world: ${profile.freeTextAnswers?.t3 || 'N/A'}
+- Their most monetizable skill: ${profile.freeTextAnswers?.t4 || 'N/A'}
+- What they would do if money didn't matter: ${profile.freeTextAnswers?.t5 || 'N/A'}
+` : 'The user has not yet shared their personal Ikigai profile details. Suggest they complete their assessment to get personalized advice, but help them as much as possible with their current mental state.'}
+
+Do not repeat these points back to them like a list. Keep it natural. Begin helping them.`;
+
+            // Prepare messages payload for Groq
+            const payload = {
+                model: "llama-3.3-70b-versatile", 
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    ...body.messages
+                ],
+                temperature: 0.7,
+                max_tokens: 1024
+            };
+
+            const groqKey = process.env.GROQ_API_KEY;
+            if (!groqKey) {
+                throw new Error('GROQ_API_KEY is missing from environment');
+            }
+
+            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${groqKey}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.text();
+                console.error('Groq Response Error Details:', errorData); // DEBUG
+                throw new Error(`Groq API error: ${errorData}`);
+            }
+
+            const data = await response.json();
+            return {
+                reply: data.choices[0].message.content
+            };
+
+        } catch (error) {
+            console.error('CRITICAL CHAT ERROR:', error);
+            return { error: 'KaikaAI is currently meditating and unavailable. Please try again in 30 seconds.' };
+        }
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(Role.USER, Role.HR, Role.SUPERADMIN) // Anyone can fill this out
+    @Post('profile')
+    async saveEmployeeProfile(@Request() req, @Body() profileData: any) {
+        const accountId = req.user.id;
+        return this.usersService.saveEmployeeProfile(accountId, profileData);
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(Role.USER, Role.HR, Role.SUPERADMIN)
+    @Get('profile/my')
+    async getMyProfile(@Request() req) {
+        const accountId = req.user.id;
+        try {
+            return await this.usersService.getEmployeeProfile(accountId);
+        } catch (error) {
+            return { isAssessmentCompleted: false };
+        }
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(Role.USER)
+    @Get('dashboard-stats')
+    async getDashboardStats(@Request() req) {
+        return this.usersService.getDashboardStats(req.user.id);
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(Role.USER)
+    @Get('mood-checkin/today')
+    async getTodayMoodCheckin(@Request() req) {
+        return this.usersService.getTodayMoodCheckin(req.user.id);
+    }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(Role.USER)
+    @Post('mood-checkin')
+    async saveTodayMoodCheckin(
+        @Request() req,
+        @Body() body: { answers: Record<string, number>; note?: string | null },
+    ) {
+        return this.usersService.saveTodayMoodCheckin(req.user.id, body);
     }
 }

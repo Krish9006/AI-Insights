@@ -58,6 +58,7 @@ export class AuthService {
 
         return {
             accessToken: this.jwtService.sign(payload),
+            id: account.id,
             role: account.role,
             isVerified: account.isVerified,
             email: account.email,

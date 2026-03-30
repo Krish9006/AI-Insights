@@ -17,9 +17,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         });
     }
 
-    async validate(payload: any) {
-        // payload structure generated in auth.service { sub: user.id, email: user.email, role: user.role }
-        const account = await this.usersService.findByEmail(payload.email) || await this.usersService.findByEmployeeId(payload.employeeId);
+    async validate(payload: { sub?: string; email?: string; employeeId?: string; role?: string }) {
+        // Always resolve by `sub` (account id). findByEmail(undefined) can match the wrong row when employees have no email.
+        if (!payload.sub) {
+            throw new UnauthorizedException('Invalid token');
+        }
+        const account = await this.usersService.findById(payload.sub);
 
         if (!account) {
             throw new UnauthorizedException('User not found');

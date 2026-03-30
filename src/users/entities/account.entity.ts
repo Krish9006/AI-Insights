@@ -1,4 +1,5 @@
-import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn, OneToOne } from 'typeorm';
+import { EmployeeProfile } from './employee-profile.entity';
 
 export enum Role {
     SUPERADMIN = 'SUPERADMIN',
@@ -37,4 +38,7 @@ export class Account {
     @ManyToOne(() => Account, { nullable: true })
     @JoinColumn({ name: 'hrId' })
     hrCreator?: Account;
+
+    @OneToOne(() => EmployeeProfile, profile => profile.account, { cascade: true })
+    profile?: EmployeeProfile;
 }
