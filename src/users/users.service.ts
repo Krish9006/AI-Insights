@@ -139,11 +139,17 @@ export class UsersService implements OnModuleInit {
     }
 
     async getEmployeesByHr(hrId: string): Promise<Account[]> {
-        return this.accountRepository.find({
-            where: { hrCreator: { id: hrId }, role: Role.USER },
-            relations: ['profile'],
-            order: { employeeId: 'ASC' },
-        });
+        if (!hrId) {
+            return [];
+        }
+        // Explicit join + hrId filter avoids fragile nested `where: { hrCreator: { id } }` + `order` SQL on Postgres (TypeORM 0.3).
+        return this.accountRepository
+            .createQueryBuilder('account')
+            .leftJoinAndSelect('account.profile', 'profile')
+            .where('account.hrId = :hrId', { hrId })
+            .andWhere('account.role = :role', { role: Role.USER })
+            .orderBy('account.employeeId', 'ASC', 'NULLS LAST')
+            .getMany();
     }
 
     async saveEmployeeProfile(accountId: string, profileData: Partial<EmployeeProfile>): Promise<EmployeeProfile> {
