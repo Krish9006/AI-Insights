@@ -9,6 +9,7 @@ import { Account } from './users/entities/account.entity';
 
 import { EmployeeProfile } from './users/entities/employee-profile.entity';
 import { DailyMoodCheckin } from './users/entities/daily-mood-checkin.entity';
+import { ChatSession } from './users/entities/chat-session.entity';
 
 @Module({
   imports: [
@@ -24,7 +25,7 @@ import { DailyMoodCheckin } from './users/entities/daily-mood-checkin.entity';
         return {
           type: 'postgres' as const,
           url: configService.get<string>('DATABASE_URL'),
-          entities: [Account, EmployeeProfile, DailyMoodCheckin],
+          entities: [Account, EmployeeProfile, DailyMoodCheckin, ChatSession],
           synchronize,
           ...(useSsl
             ? {

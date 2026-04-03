@@ -17,12 +17,13 @@ export class AuthService {
         const salt = await bcrypt.genSalt();
         const hash = await bcrypt.hash(dto.password, salt);
 
-        const hr = await this.usersService.createHr(dto.email, hash, dto.companyName);
+        const hr = await this.usersService.createHr(dto.email, hash, dto.companyName, dto.name);
 
         return {
             message: 'HR account created. Awaiting SuperAdmin verification.',
             hrId: hr.id,
             email: hr.email,
+            name: hr.name,
         };
     }
 
@@ -53,6 +54,7 @@ export class AuthService {
             sub: account.id,
             email: account.email,
             employeeId: account.employeeId,
+            name: account.name,
             role: account.role
         };
 
@@ -62,6 +64,7 @@ export class AuthService {
             role: account.role,
             isVerified: account.isVerified,
             email: account.email,
+            name: account.name,
             employeeId: account.employeeId,
             companyName: account.companyName
         };

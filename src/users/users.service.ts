@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Account, Role } from './entities/account.entity';
 import { EmployeeProfile } from './entities/employee-profile.entity';
 import { DailyMoodCheckin } from './entities/daily-mood-checkin.entity';
+import { ChatSession } from './entities/chat-session.entity';
 import * as bcrypt from 'bcrypt';
 
 function utcDateString(d: Date): string {
@@ -44,6 +45,8 @@ export class UsersService implements OnModuleInit {
         private readonly profileRepository: Repository<EmployeeProfile>,
         @InjectRepository(DailyMoodCheckin)
         private readonly dailyMoodRepository: Repository<DailyMoodCheckin>,
+        @InjectRepository(ChatSession)
+        private readonly chatSessionRepository: Repository<ChatSession>,
     ) { }
 
     async onModuleInit() {
@@ -73,7 +76,7 @@ export class UsersService implements OnModuleInit {
         }
     }
 
-    async createHr(email: string, passwordHash: string, companyName: string): Promise<Account> {
+    async createHr(email: string, passwordHash: string, companyName: string, name: string): Promise<Account> {
         const existing = await this.accountRepository.findOne({ where: { email } });
         if (existing) {
             throw new ConflictException('Email already in use');
@@ -83,6 +86,7 @@ export class UsersService implements OnModuleInit {
             email,
             password: passwordHash,
             companyName,
+            name,
             role: Role.HR,
             isVerified: false, // Must be verified by SuperAdmin
         });
@@ -102,7 +106,7 @@ export class UsersService implements OnModuleInit {
         return this.accountRepository.findOne({ where: { id } });
     }
 
-    async createEmployee(hrId: string, employeeId: string, passwordHash: string): Promise<Account> {
+    async createEmployee(hrId: string, employeeId: string, passwordHash: string, name: string): Promise<Account> {
         const existing = await this.findByEmployeeId(employeeId);
         if (existing) {
             throw new ConflictException('Employee ID already in use');
@@ -116,6 +120,7 @@ export class UsersService implements OnModuleInit {
         const employee = this.accountRepository.create({
             employeeId,
             password: passwordHash,
+            name,
             role: Role.USER,
             isVerified: true, // Employees don't need verification
             hrCreator: hr,
@@ -162,12 +167,22 @@ export class UsersService implements OnModuleInit {
         console.log(`[Profile Update] Saving profile for Account: ${accountId}. Has existing profile: ${!!account.profile}`);
 
         if (!account.profile) {
+            // Calculate initial mentalHealthScore (Clarity) as average of Ikigai pillars
+            const scores = profileData.computedScores || {};
+            const avgScore = Math.round(
+                ((scores.love || 0) + (scores.goodAt || 0) + (scores.worldNeeds || 0) + (scores.paidFor || 0)) / 4
+            ) || 75; // Default to 75 if no scores
+
             account.profile = this.profileRepository.create({ 
                 account, 
                 isAssessmentCompleted: true, 
+                mentalHealthScore: avgScore,
+                streakDays: 1,
+                reflectionCount: 1,
+                lastDailyVisit: utcDateString(new Date()),
                 ...profileData 
             });
-            console.log(`[Profile Update] Created NEW profile for ${accountId}`);
+            console.log(`[Profile Update] Created NEW profile for ${accountId} with initial stats.`);
         } else {
             Object.assign(account.profile, profileData);
             account.profile.isAssessmentCompleted = true;
@@ -175,8 +190,15 @@ export class UsersService implements OnModuleInit {
         }
 
         const saved = await this.profileRepository.save(account.profile);
-        console.log(`[Profile Update] Profile saved successfully. Assessment Status: ${saved.isAssessmentCompleted}`);
+        console.log(`[Profile Update] Profile saved successfully. Assessment Status: ${saved.isAssessmentCompleted}, Tour Status: ${saved.hasCompletedTour}`);
         return saved;
+    }
+
+    async completeTour(accountId: string): Promise<void> {
+        let profile = await this.profileRepository.findOne({ where: { account: { id: accountId } } });
+        if (!profile) throw new NotFoundException('Profile not found');
+        profile.hasCompletedTour = true;
+        await this.profileRepository.save(profile);
     }
 
     async getEmployeeProfile(accountId: string): Promise<EmployeeProfile> {
@@ -214,24 +236,29 @@ export class UsersService implements OnModuleInit {
 
         if (!lastStr) {
             profile.streakDays = 1;
-            profile.reflectionCount = (profile.reflectionCount ?? 0) + 1;
+            profile.reflectionCount = 1;
         } else {
             const gap = utcCalendarDaysBetween(today, lastStr);
             if (gap === 1) {
                 profile.streakDays = (profile.streakDays ?? 0) + 1;
-            } else if (gap > 1 || gap < 0) {
+                profile.reflectionCount = (profile.reflectionCount ?? 0) + 1;
+            } else if (gap > 1) {
+                profile.streakDays = 1;
+                profile.reflectionCount = (profile.reflectionCount ?? 0) + 1;
+            } else if (gap < 0) {
+                // Future date? Reset safety.
                 profile.streakDays = 1;
             }
-            profile.reflectionCount = (profile.reflectionCount ?? 0) + 1;
+            // If gap is 0 (same day), do nothing
         }
 
         profile.lastDailyVisit = today;
         await this.profileRepository.save(profile);
 
         return {
-            streakDays: profile.streakDays,
-            reflectionCount: profile.reflectionCount,
-            clarityScore: profile.mentalHealthScore ?? 0,
+            streakDays: profile.streakDays || 1,
+            reflectionCount: profile.reflectionCount || 1,
+            clarityScore: profile.mentalHealthScore ?? 75,
         };
     }
 
@@ -537,12 +564,148 @@ export class UsersService implements OnModuleInit {
             teamMentalHealth: avgHealth,
             teamBurnoutRisk: avgBurnout,
             sentimentDistribution: sentimentMap,
-            topInterests,
-            burnoutBuckets,
+            topInterests: topInterests,
+            burnoutBuckets: burnoutBuckets,
             moodTrend7d,
             moodParticipationToday,
             riskAlerts,
             mentalHealthBuckets,
         };
     }
+
+    // --- CHAT HISTORY METHODS ---
+
+    async getChatSessions(accountId: string): Promise<ChatSession[]> {
+        return this.chatSessionRepository.find({
+            where: { account: { id: accountId } },
+            order: { updatedAt: 'DESC' },
+            select: ['id', 'title', 'createdAt', 'updatedAt']
+        });
+    }
+
+    async getChatSession(sessionId: string, accountId: string): Promise<ChatSession> {
+        const session = await this.chatSessionRepository.findOne({
+            where: { id: sessionId, account: { id: accountId } }
+        });
+        if (!session) throw new NotFoundException('Chat session not found');
+        return session;
+    }
+
+    async saveChatSession(accountId: string, data: { sessionId?: string; title?: string; messages: any[] }): Promise<ChatSession> {
+        let session: ChatSession;
+        
+        if (data.sessionId) {
+            const existingSession = await this.chatSessionRepository.findOne({ where: { id: data.sessionId, account: { id: accountId } } });
+            if (!existingSession) throw new NotFoundException('Chat session not found');
+            session = existingSession;
+            session.messages = data.messages;
+            if (data.title) session.title = data.title;
+        } else {
+            const account = await this.accountRepository.findOne({ where: { id: accountId } });
+            if (!account) throw new NotFoundException('Account not found');
+            
+            // Auto-generate title from first user message if not provided
+            let title = data.title || 'New Session';
+            if (!data.title && data.messages.length > 0) {
+                const firstUserMsg = data.messages.find(m => m.role === 'user');
+                if (firstUserMsg) {
+                    title = firstUserMsg.content.slice(0, 40) + (firstUserMsg.content.length > 40 ? '...' : '');
+                }
+            }
+
+            session = this.chatSessionRepository.create({
+                account,
+                title,
+                messages: data.messages
+            });
+        }
+
+        return this.chatSessionRepository.save(session);
+    }
+
+    async deleteChatSession(sessionId: string, accountId: string): Promise<void> {
+        const result = await this.chatSessionRepository.delete({ id: sessionId, account: { id: accountId } });
+        if (result.affected === 0) throw new NotFoundException('Chat session not found');
+    }
+
+    async renameChatSession(sessionId: string, accountId: string, title: string): Promise<ChatSession> {
+        const session = await this.chatSessionRepository.findOne({ where: { id: sessionId, account: { id: accountId } } });
+        if (!session) throw new NotFoundException('Chat session not found');
+        session.title = title;
+        return this.chatSessionRepository.save(session);
+    }
+
+    async generateAiInsights(accountId: string): Promise<any> {
+        const [profile, moods, sessions] = await Promise.all([
+          this.profileRepository.findOne({ where: { account: { id: accountId } } }),
+          this.dailyMoodRepository.find({ where: { account: { id: accountId } }, order: { checkinDate: 'DESC' }, take: 10 }),
+          this.chatSessionRepository.find({ where: { account: { id: accountId } }, order: { updatedAt: 'DESC' }, take: 5 })
+        ]);
+        
+        if (!profile || !profile.isAssessmentCompleted) {
+          return { insights: [] };
+        }
+    
+        const prompt = `System: You are an Elite AI Performance & Purpose Psychologist. Your mission is to provide 3 DEEP, RAW, and POWERFUL 'TAGDHE' INSIGHTS for the user's dashboard. Avoid generic advice. Use their data to tell them hard truths and high-value strategic pivots.
+        
+        - USER DATA (MCQ %): 
+          Love/Passion: ${profile.computedScores?.love}%
+          GoodAt/Skill: ${profile.computedScores?.goodAt}%
+          WorldNeeds/Impact: ${profile.computedScores?.worldNeeds}%
+          PaidFor/Value: ${profile.computedScores?.paidFor}%
+          
+        - INTERESTS & PASSIONS: 
+          ${profile.interests?.join(', ') || 'N/A'}
+          User loves: ${profile.freeTextAnswers?.t1}
+          User problem: ${profile.freeTextAnswers?.t3}
+          
+        - RAW DATA PATTERNS:
+          Mood Trend (Last 10 entries): ${moods.map(m => m.moodScore).join('%, ')}%
+          Recent AI Chat Topics: ${sessions.map(s => s.title).join(', ')}
+        
+        CONSTRAINTS:
+        - One insight MUST be about their Ikigai gap (where they are imbalanced).
+        - One insight MUST be about their Mental Clarity based on mood/chat data.
+        - One insight MUST be a high-performance 'Strategy' for their professional growth.
+        
+        OUTPUT FORMAT (Strictly JSON array with 3 objects):
+        [
+          { "type": "Psychological" | "Ikigai Gap" | "Strategic Move", "title": "...", "content": "..." },
+          ...
+        ]
+        Make content punchy, direct (use 'You'), and deeply personalized. 30-40 words each.`;
+    
+        try {
+          const groqKey = process.env.GROQ_API_KEY;
+          if (!groqKey) throw new Error('GROQ_API_KEY is missing');
+    
+          const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${groqKey}`
+            },
+            body: JSON.stringify({
+              model: "llama-3.3-70b-versatile",
+              messages: [{ role: "user", content: prompt }],
+              temperature: 0.7,
+              response_format: { type: "json_object" }
+            })
+          });
+          
+          const raw = await response.json();
+          const text = raw.choices[0].message.content;
+          const parsed = JSON.parse(text);
+          return { insights: Array.isArray(parsed) ? parsed : (parsed.insights || []) };
+        } catch (error) {
+          console.error("INSIGHTS ERROR:", error);
+          return {
+            insights: [
+              { type: 'Psychological', title: 'The Passion Gap', content: 'You are highly skilled in your field, but your heart is trailing behind. This mismatch is a silent engine for burnout. Reconnect with what you love.' },
+              { type: 'Ikigai Gap', title: 'Market vs Mission', content: 'You are being paid well, but your world-impact score is dipping. Your long-term satisfaction requires a pivot toward meaningful problem-solving.' },
+              { type: 'Strategic Move', title: 'Hyper-Focus Window', content: 'Your clarity peaks in the morning. Stop wasting these hours on administrative tasks. Dedicate them entirely to your core skill growth.' }
+            ]
+          };
+        }
+      }
 }

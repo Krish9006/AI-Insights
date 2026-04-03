@@ -9,4 +9,8 @@ export class CreateEmployeeDto {
     @IsNotEmpty()
     @MinLength(6)
     password: string;
+
+    @IsString()
+    @IsNotEmpty()
+    name: string;
 }

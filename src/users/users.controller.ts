@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Put, Body, UseGuards, Request, Param } from '@nestjs/common';
+import { Controller, Post, Get, Put, Delete, Body, UseGuards, Request, Param } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -23,12 +23,14 @@ export class UsersController {
         const employee = await this.usersService.createEmployee(
             hrId,
             createEmployeeDto.employeeId,
-            hash
+            hash,
+            createEmployeeDto.name
         );
 
         return {
             message: 'Employee account created successfully',
-            employeeId: employee.employeeId
+            employeeId: employee.employeeId,
+            name: employee.name
         };
     }
 
@@ -65,6 +67,7 @@ export class UsersController {
         const accounts = await this.usersService.getEmployeesByHr(req.user.id);
         return accounts.map((a) => ({
             id: a.id,
+            name: a.name,
             employeeId: a.employeeId,
             role: a.role,
             assessmentCompleted: a.profile?.isAssessmentCompleted ?? false,
@@ -139,16 +142,27 @@ USER'S DEEP THOUGHTS:
 
 Do not list the profile back to them. Keep it natural. Begin helping them.`;
 
-            // Prepare messages payload for Groq
+            // Prepare messages payload for Groq, injecting file context if present
+            const messagesWithFileContext = body.messages.map(msg => {
+                if (msg.file) {
+                    return {
+                        ...msg,
+                        content: `[FILE ATTACHED: ${msg.file.name} (${msg.file.type})] ${msg.content}`
+                    };
+                }
+                return msg;
+            });
+
             const payload = {
                 model: "llama-3.3-70b-versatile", 
                 messages: [
                     { role: "system", content: systemPrompt },
-                    ...body.messages
+                    ...messagesWithFileContext
                 ],
                 temperature: 0.7,
                 max_tokens: 1024
             };
+
 
             const groqKey = process.env.GROQ_API_KEY;
             if (!groqKey) {
@@ -223,5 +237,51 @@ Do not list the profile back to them. Keep it natural. Begin helping them.`;
         @Body() body: { answers: Record<string, number>; note?: string | null },
     ) {
         return this.usersService.saveTodayMoodCheckin(req.user.id, body);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @Post('tour/complete')
+    async completeTour(@Request() req) {
+        await this.usersService.completeTour(req.user.id);
+        return { success: true };
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @Get('insights')
+    async getAiInsights(@Request() req) {
+        return this.usersService.generateAiInsights(req.user.id);
+    }
+
+    // --- CHAT HISTORY ENDPOINTS ---
+
+    @UseGuards(JwtAuthGuard)
+    @Get('chat/history')
+    async getChatHistory(@Request() req) {
+        return this.usersService.getChatSessions(req.user.id);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @Get('chat/session/:id')
+    async getChatSession(@Request() req, @Param('id') id: string) {
+        return this.usersService.getChatSession(id, req.user.id);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @Post('chat/session')
+    async saveChatSession(@Request() req, @Body() body: { sessionId?: string; title?: string; messages: any[] }) {
+        return this.usersService.saveChatSession(req.user.id, body);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @Put('chat/session/:id/rename')
+    async renameChatSession(@Request() req, @Param('id') id: string, @Body() body: { title: string }) {
+        return this.usersService.renameChatSession(id, req.user.id, body.title);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @Delete('chat/session/:id')
+    async deleteChatSession(@Request() req, @Param('id') id: string) {
+        await this.usersService.deleteChatSession(id, req.user.id);
+        return { success: true };
     }
 }

@@ -12,4 +12,8 @@ export class HrSignupDto {
     @IsString()
     @IsNotEmpty()
     companyName: string;
+
+    @IsString()
+    @IsNotEmpty()
+    name: string;
 }

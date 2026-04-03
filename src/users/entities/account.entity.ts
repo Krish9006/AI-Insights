@@ -12,6 +12,9 @@ export class Account {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ nullable: true })
+    name?: string;
+
     @Column({ unique: true, nullable: true })
     email?: string; // For SuperAdmin and HR
 

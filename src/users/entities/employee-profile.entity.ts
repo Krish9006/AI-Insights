@@ -54,4 +54,7 @@ export class EmployeeProfile {
     /** Last UTC calendar day we applied streak / reflection logic (YYYY-MM-DD). */
     @Column({ type: 'date', nullable: true })
     lastDailyVisit: string | Date | null;
+
+    @Column({ default: false })
+    hasCompletedTour: boolean;
 }
