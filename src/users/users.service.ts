@@ -303,11 +303,33 @@ export class UsersService implements OnModuleInit {
         const scores = user.computedScores || {};
         const systemPrompt = `You are KaikaAI, a world-class Ikigai Coach and Mental Wellness guide. The employee's current Ikigai scores: Love: ${scores.love || 0}, GoodAt: ${scores.goodAt || 0}, WorldNeeds: ${scores.worldNeeds || 0}, PaidFor: ${scores.paidFor || 0}. Goal: Provide deep, philosophical, yet actionable career and wellness advice based on their Ikigai results. Keep responses concise and supportive. Always relate back to their Ikigai where relevant.`;
         try {
-            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.GROQ_API_KEY || 'gsk_...'}` }, body: JSON.stringify({ model: 'llama3-70b-8192', messages: [{ role: 'system', content: systemPrompt }, ...messages] }) });
+            const apiKey = process.env.GROQ_API_KEY;
+            if (!apiKey || apiKey === 'gsk_...') {
+                console.error('Groq API Key is missing or invalid');
+                return { error: 'Groq API Key not configured correctly.' };
+            }
+
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', { 
+                method: 'POST', 
+                headers: { 
+                    'Content-Type': 'application/json', 
+                    'Authorization': `Bearer ${apiKey}` 
+                }, 
+                body: JSON.stringify({ 
+                    model: 'llama-3.3-70b-versatile', 
+                    messages: [{ role: 'system', content: systemPrompt }, ...messages] 
+                }) 
+            });
+            
             const data = await response.json();
+            if (!response.ok) {
+                console.error('Groq Error Response:', JSON.stringify(data, null, 2));
+                return { error: `Groq error: ${data.error?.message || 'Unknown error'}` };
+            }
             return { reply: data.choices[0].message.content };
         } catch (e) {
-            return { error: 'Taking a deep breath. Try again soon.' };
+            console.error('Groq connection error:', e);
+            return { error: `Connection failed: ${e.message}. Please check logs.` };
         }
     }
 
@@ -439,12 +461,18 @@ export class UsersService implements OnModuleInit {
         
         Keep it professional, high-concept, and actionable.`;
 
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey || apiKey === 'gsk_...') {
+            console.error('Groq API Key is missing or invalid');
+            return { error: 'Groq API Key not configured.' };
+        }
+
         try {
             const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${process.env.GROQ_API_KEY || 'gsk_...'}`
+                    'Authorization': `Bearer ${apiKey}`
                 },
                 body: JSON.stringify({
                     model: 'llama-3.3-70b-versatile',
@@ -453,8 +481,13 @@ export class UsersService implements OnModuleInit {
                 })
             });
             const data = await response.json();
+            if (!response.ok) {
+                console.error('Groq Blueprint Error:', data);
+                throw new Error(data.error?.message || 'Failed to generate blueprint');
+            }
             return JSON.parse(data.choices[0].message.content);
         } catch (e) {
+            console.error('Groq Blueprint exception:', e);
             // MOCK Fallback if Groq fails or API key missing
             return {
                 masterAdvice: `A strategic alignment with ${pathway.title} is within your operational vector, with minor adjustments needed for peak Ikigai harmony.`,
