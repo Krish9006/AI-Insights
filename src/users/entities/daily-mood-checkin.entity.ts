@@ -32,6 +32,14 @@ export class DailyMoodCheckin {
     @Column({ default: 0 })
     moodScore: number;
 
+    // Energy level from specific question, 0-100 normalized
+    @Column({ default: 0 })
+    energyScore: number;
+
+    // Sentiment analysis of 'note' field
+    @Column({ type: 'text', nullable: true })
+    sentiment?: string | null;
+
     @Column({ type: 'text', nullable: true })
     note?: string | null;
 

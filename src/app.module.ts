@@ -7,9 +7,11 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { Account } from './users/entities/account.entity';
 
-import { EmployeeProfile } from './users/entities/employee-profile.entity';
 import { DailyMoodCheckin } from './users/entities/daily-mood-checkin.entity';
 import { ChatSession } from './users/entities/chat-session.entity';
+import { Pathway } from './users/entities/pathway.entity';
+import { DirectMessage } from './users/entities/direct-message.entity';
+import { GrowthStory } from './users/entities/growth-story.entity';
 
 @Module({
   imports: [
@@ -25,7 +27,7 @@ import { ChatSession } from './users/entities/chat-session.entity';
         return {
           type: 'postgres' as const,
           url: configService.get<string>('DATABASE_URL'),
-          entities: [Account, EmployeeProfile, DailyMoodCheckin, ChatSession],
+          entities: [Account, DailyMoodCheckin, ChatSession, Pathway, DirectMessage, GrowthStory],
           synchronize,
           ...(useSsl
             ? {
