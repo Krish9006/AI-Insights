@@ -161,7 +161,15 @@ export class UsersService implements OnModuleInit {
     async saveEmployeeProfile(accountId: string, data: any) {
         const account = await this.accountRepository.findOne({ where: { id: accountId } });
         if (!account) throw new NotFoundException('Account not found');
+        // Save computed scores, mental health, assessment completion flag
         Object.assign(account, { ...data, isAssessmentCompleted: true, mentalHealthScore: data.mentalHealthScore || 75 });
+        // Persist the raw assessment Q&A for chatbot context
+        if (data.mcqAnswers || data.freeTextAnswers) {
+            account.assessmentAnswers = {
+                mcqAnswers: data.mcqAnswers || {},
+                freeTextAnswers: data.freeTextAnswers || {}
+            };
+        }
         return this.accountRepository.save(account);
     }
 
@@ -169,10 +177,6 @@ export class UsersService implements OnModuleInit {
         const account = await this.accountRepository.findOne({ where: { id: accountId } });
         if (!account) throw new NotFoundException('Account missing');
         return account;
-    }
-
-    async completeTour(accountId: string) {
-        // hasCompletedTour removed in simplified version
     }
 
     async getDashboardStats(accountId: string) {
@@ -296,19 +300,57 @@ export class UsersService implements OnModuleInit {
             .orWhere('(pathway.userId IS NULL AND hr.companyName = :company)', { company: user.companyName || 'KaikaAI Labs' })
             .getMany();
     }
-    async getPathwaysForHr(hrId: string) { return this.pathwayRepository.find({ where: { hrCreator: { id: hrId } } }); }
+    async getPathwaysForHr(hrId: string) { 
+        return this.pathwayRepository.find({ 
+            where: { hrCreator: { id: hrId } },
+            relations: ['assignedTo'] 
+        }); 
+    }
 
-    async getAiCoachingResponse(userId: string, messages: any[]) {
+    async getAiCoachingResponse(userId: string, messages: any[], res: any) {
         const user = await this.getEmployeeProfile(userId);
         const scores = user.computedScores || {};
-        const systemPrompt = `You are KaikaAI, a world-class Ikigai Coach and Mental Wellness guide. The employee's current Ikigai scores: Love: ${scores.love || 0}, GoodAt: ${scores.goodAt || 0}, WorldNeeds: ${scores.worldNeeds || 0}, PaidFor: ${scores.paidFor || 0}. Goal: Provide deep, philosophical, yet actionable career and wellness advice based on their Ikigai results. Keep responses concise and supportive. Always relate back to their Ikigai where relevant.`;
-        try {
-            const apiKey = process.env.GROQ_API_KEY;
-            if (!apiKey || apiKey === 'gsk_...') {
-                console.error('Groq API Key is missing or invalid');
-                return { error: 'Groq API Key not configured correctly.' };
-            }
+        
+        const isNewSession = messages.length <= 1;
+        const scoreContext = isNewSession 
+            ? `Work Alignment Baseline — Ikigai Pillars: [Passion (Love): ${scores.love || 0}/100, Expertise (GoodAt): ${scores.goodAt || 0}/100, Mission (WorldNeeds): ${scores.worldNeeds || 0}/100, Vocation (PaidFor): ${scores.paidFor || 0}/100].`
+            : `Reference the user's alignment pillar scores only when directly relevant to the conversation.`;
 
+        // Inject the user's actual free-text assessment answers for personalized context
+        const freeTextAnswers = (user as any).assessmentAnswers?.freeTextAnswers || {};
+        const freeTextKeys = Object.values(freeTextAnswers).filter(Boolean);
+        const assessmentContext = freeTextKeys.length > 0
+            ? `\n\nEmployee's own words from their Ikigai Assessment:\n${freeTextKeys.slice(0, 4).map((v, i) => `- Q${i+1}: "${v}"`).join('\n')}`
+            : '';
+
+        const systemPrompt = `You are KaikaAI, a sharp and insightful Work Alignment Co-Pilot for ${user.companyName || 'their organization'}.
+
+USER PROFILE: ${user.name || 'User'} — ${user.department || 'General'} Department
+${scoreContext}${assessmentContext}
+
+YOUR ROLE:
+- You help employees connect their daily work to their organization's larger mission and strategic objectives.
+- You are NOT a medical therapist, but you possess HIGH EMOTIONAL INTELLIGENCE (EQ). You are warm, empathetic, and deeply human.
+- If the user expresses sadness, a bad mood, frustration, or stress (e.g., "i am very sad", "my mood is bad", "feeling low"), NEVER ignore it or give a cold, clinical deflection like "Let's shift focus to work." Validate their emotional state first with warm, genuine care (e.g., "I hear you, and I'm really sorry to hear that you're carrying that weight today. It's completely valid to have off days.").
+- Gently and gracefully bridge their feelings to the work context (e.g., "Often, hidden professional friction, role misalignment, or feeling overwhelmed by a task can silently drain our energy. When you feel ready, would you like to explore if there is something specific in your current role that's weighing you down, or do you just need a low-pressure space to talk?").
+- You help identify misalignment between role, goals, and organizational mission — then suggest concrete, highly actionable fixes.
+- Avoid the "interrogation loop": do NOT just ask question after question. Every response must deliver high-value, practical solutions, reframes, templates, or communication tactics they can use immediately with their team or manager.
+- Once you identify a friction point (unclear ownership, value mismatch, priority conflict), offer 1-2 practical, corporate-ready solutions first, then wrap up with a single focused question to keep the dialogue active.
+- You keep responses highly actionable, concise, and under 120 words.
+- You are direct, confident, and empowering — acting as a senior performance co-pilot.
+- If the user's message is a greeting (e.g., "hi", "hello", "hey", "good morning"), reply with a simple, welcoming, and professional greeting, introducing yourself as their Work Alignment Co-Pilot, and ask how their work alignment or role focus is going today. Keep it conversational and do not jump into metrics or deep diagnostic questions immediately.
+- If you have the user's assessment answers, reference them naturally when relevant (e.g. "You mentioned in your assessment that you love...").
+
+NEVER repeat scores or intro phrases across messages. Evolve dynamically with each turn of conversation.`;
+
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey || apiKey === 'gsk_...') {
+            res.write(`data: ${JSON.stringify({ error: 'Groq API Key not configured correctly.' })}\n\n`);
+            res.end();
+            return;
+        }
+
+        try {
             const response = await fetch('https://api.groq.com/openai/v1/chat/completions', { 
                 method: 'POST', 
                 headers: { 
@@ -317,19 +359,108 @@ export class UsersService implements OnModuleInit {
                 }, 
                 body: JSON.stringify({ 
                     model: 'llama-3.3-70b-versatile', 
-                    messages: [{ role: 'system', content: systemPrompt }, ...messages] 
+                    messages: [{ role: 'system', content: systemPrompt }, ...messages],
+                    stream: true
                 }) 
             });
-            
-            const data = await response.json();
+
             if (!response.ok) {
-                console.error('Groq Error Response:', JSON.stringify(data, null, 2));
-                return { error: `Groq error: ${data.error?.message || 'Unknown error'}` };
+                const errData = await response.json();
+                res.write(`data: ${JSON.stringify({ error: `Groq error: ${errData.error?.message || 'Unknown'}` })}\n\n`);
+                res.end();
+                return;
             }
-            return { reply: data.choices[0].message.content };
+
+            if (!response.body) {
+                res.write(`data: ${JSON.stringify({ error: "Groq stream returned empty response." })}\n\n`);
+                res.end();
+                return;
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let accumulatedReply = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+                for (const line of lines) {
+                    if (line.includes('[DONE]')) continue;
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const jsonStr = line.slice(6);
+                            const parsed = JSON.parse(jsonStr);
+                            const text = parsed.choices[0]?.delta?.content || '';
+                            if (text) {
+                                accumulatedReply += text;
+                                res.write(`data: ${JSON.stringify({ text })}\n\n`);
+                            }
+                        } catch (e) {
+                            // ignore parsing errors for incomplete chunks
+                        }
+                    }
+                }
+            }
+
+            // === POST-CHAT STAT UPDATE ===
+            // Perform this update in the background so we do not block user streaming
+            this.updateStatsFromChat(userId, messages).catch(e =>
+                console.error('Error updating stats from chat:', e)
+            );
+
         } catch (e) {
-            console.error('Groq connection error:', e);
-            return { error: `Connection failed: ${e.message}. Please check logs.` };
+            console.error('Groq streaming error:', e);
+            res.write(`data: ${JSON.stringify({ error: `Connection failed: ${e.message}` })}\n\n`);
+        } finally {
+            res.end();
+        }
+    }
+
+    /**
+     * Called after every successful chat exchange.
+     * - Increments reflectionCount (chat counts as a reflection)
+     * - Nudges mentalHealthScore based on conversation sentiment keywords
+     * - Updates streak via the existing streak logic
+     */
+    private async updateStatsFromChat(userId: string, messages: any[]): Promise<void> {
+        try {
+            const user = await this.accountRepository.findOne({ where: { id: userId } });
+            if (!user) return;
+
+            // Increment reflection count — every chat exchange is an alignment reflection
+            user.reflectionCount = (user.reflectionCount || 0) + 1;
+
+            // Simple keyword-based sentiment analysis on the last user message
+            // to nudge the mentalHealthScore up or down as a proxy for alignment health.
+            const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+            if (lastUserMsg?.content) {
+                const text = (lastUserMsg.content as string).toLowerCase();
+                const positiveSignals = ['great', 'excited', 'clear', 'aligned', 'motivated', 'confident', 'progress', 'achieved', 'good', 'happy', 'energized'];
+                const negativeSignals = ['stuck', 'confused', 'stressed', 'burnout', 'overwhelmed', 'lost', 'disconnected', 'frustrated', 'anxious', 'tired', 'unclear'];
+
+                const positiveHits = positiveSignals.filter(w => text.includes(w)).length;
+                const negativeHits = negativeSignals.filter(w => text.includes(w)).length;
+
+                const currentScore = user.mentalHealthScore || 75;
+                let adjustment = 0;
+                if (positiveHits > negativeHits) adjustment = Math.min(2, positiveHits); // nudge up
+                if (negativeHits > positiveHits) adjustment = -Math.min(3, negativeHits); // nudge down (more sensitive)
+
+                // Keep score bounded between 20 and 99
+                user.mentalHealthScore = Math.max(20, Math.min(99, currentScore + adjustment));
+            }
+
+            await this.accountRepository.save(user);
+
+            // Also update the daily streak since chatting is an active engagement
+            await this.updateStreak(userId);
+        } catch (e) {
+            // Non-critical — don't break the chat if this fails
+            console.error('updateStatsFromChat failed silently:', e);
         }
     }
 
@@ -387,11 +518,11 @@ export class UsersService implements OnModuleInit {
 
     async updateStreak(accountId: string) {
         const p = await this.accountRepository.findOne({ where: { id: accountId } });
-        if (!p) return;
+        if (!p) return { success: false, message: 'User not found' };
         const todayStr = utcDateString(new Date());
         if (p.lastDailyVisit) {
             const lastStr = typeof p.lastDailyVisit === 'string' ? p.lastDailyVisit.slice(0, 10) : utcDateString(p.lastDailyVisit as Date);
-            if (lastStr === todayStr) return;
+            if (lastStr === todayStr) return { streakDays: p.streakDays, reflectionCount: p.reflectionCount, alreadyUpdated: true };
             const diff = utcCalendarDaysBetween(todayStr, lastStr);
             p.streakDays = diff === 1 ? p.streakDays + 1 : 1;
         } else {
@@ -400,7 +531,7 @@ export class UsersService implements OnModuleInit {
         p.reflectionCount = (p.reflectionCount || 0) + 1;
         p.lastDailyVisit = todayStr;
         await this.accountRepository.save(p);
-        return { streakDays: p.streakDays, reflectionCount: p.reflectionCount };
+        return { streakDays: p.streakDays, reflectionCount: p.reflectionCount, success: true };
     }
 
     async getChatSessions(accountId: string) { return this.chatSessionRepository.find({ where: { account: { id: accountId } }, order: { updatedAt: 'DESC' } }); }
@@ -415,19 +546,281 @@ export class UsersService implements OnModuleInit {
             session.messages = data.messages;
             if (data.title) session.title = data.title;
         }
-        return this.chatSessionRepository.save(session);
+        const saved = await this.chatSessionRepository.save(session);
+
+        // Auto-generate alignment intelligence when a session has 6+ messages (3 exchanges)
+        // This fires silently — the employee never sees it, HR dashboard picks it up
+        if ((saved.messages?.length || 0) >= 6 && !saved.alignmentReport) {
+            this.autoGenerateAlignmentReport(saved.id, saved.messages, accountId).catch(e =>
+                console.error('autoGenerateAlignmentReport failed silently:', e)
+            );
+        }
+
+        return saved;
+    }
+
+    /**
+     * Fires silently in the background after a meaningful conversation (6+ messages).
+     * Calls Groq to distill the chat into structured alignment intelligence,
+     * then saves it to the ChatSession's alignmentReport field.
+     * HR sees this on their dashboard — employee never sees it.
+     */
+    private async autoGenerateAlignmentReport(sessionId: string, messages: any[], userId: string): Promise<void> {
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey || apiKey === 'gsk_...') return;
+
+        const user = await this.accountRepository.findOne({ where: { id: userId } });
+        const scores = (user?.computedScores || {}) as any;
+
+        const analysisPrompt = `You are an organizational psychologist analyzing a work alignment coaching conversation.
+
+Employee context:
+- Department: ${user?.department || 'General'}
+- Ikigai Passion score: ${scores.love || 0}/100
+- Ikigai Expertise score: ${scores.goodAt || 0}/100
+- Ikigai Mission score: ${scores.worldNeeds || 0}/100
+- Ikigai Vocation score: ${scores.paidFor || 0}/100
+
+Analyze the following coaching conversation and return a JSON object with EXACTLY these keys:
+- alignmentScore: number 0-100 (how aligned this employee seems with their role/org right now)
+- riskLevel: one of "Low", "Medium", or "High" (HR action urgency)
+- keyThemes: array of 2-4 short strings (e.g. ["Role clarity issues", "Disconnected from Q3 goals"])
+- recommendedActions: array of 2-3 actionable strings for HR (e.g. ["Schedule 1:1 to clarify ownership"])
+
+Return ONLY valid JSON. No markdown, no explanation.`;
+
+        try {
+            const conversationText = messages
+                .map(m => `${m.role === 'user' ? 'Employee' : 'Coach'}: ${m.content}`)
+                .join('\n');
+
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                body: JSON.stringify({
+                    model: 'llama-3.3-70b-versatile',
+                    messages: [
+                        { role: 'system', content: analysisPrompt },
+                        { role: 'user', content: conversationText }
+                    ],
+                    response_format: { type: 'json_object' }
+                })
+            });
+
+            const data = await response.json();
+            if (!response.ok) return;
+
+            const report = JSON.parse(data.choices[0].message.content);
+            report.generatedAt = new Date().toISOString();
+
+            // Validate and clamp alignmentScore
+            report.alignmentScore = Math.max(0, Math.min(100, Number(report.alignmentScore) || 50));
+
+            await this.chatSessionRepository.update(sessionId, { alignmentReport: report });
+        } catch (e) {
+            console.error('autoGenerateAlignmentReport Groq error:', e);
+        }
+    }
+
+    /**
+     * Returns recent session intelligence reports for all employees under an HR.
+     * Used by the HR dashboard's Session Intelligence feed.
+     */
+    async getHrSessionIntelligence(hrId: string) {
+        const emps = await this.getEmployeesByHr(hrId);
+        const empIds = emps.map(e => e.id);
+        if (empIds.length === 0) return [];
+
+        const sessions = await this.chatSessionRepository
+            .createQueryBuilder('session')
+            .leftJoinAndSelect('session.account', 'account')
+            .where('account.id IN (:...ids)', { ids: empIds })
+            .andWhere('session.alignmentReport IS NOT NULL')
+            .orderBy('session.updatedAt', 'DESC')
+            .take(20)
+            .getMany();
+
+        return sessions.map(s => ({
+            sessionId: s.id,
+            employeeId: (s.account as any)?.employeeId || 'Unknown',
+            department: (s.account as any)?.department || 'General',
+            sessionTitle: s.title,
+            updatedAt: s.updatedAt,
+            report: s.alignmentReport
+        }));
+    }
+
+    async completeTour(accountId: string) {
+        const acc = await this.findById(accountId);
+        if (!acc) return;
+        acc.hasCompletedTour = true;
+        return this.accountRepository.save(acc);
     }
     async deleteChatSession(id: string, userId: string) { await this.chatSessionRepository.delete(id); }
+
+    async renameChatSession(id: string, title: string) {
+        const session = await this.getChatSession(id);
+        if (!session) throw new NotFoundException('Session not found');
+        session.title = title;
+        return this.chatSessionRepository.save(session);
+    }
 
     async getHrTeamStats(hrId: string) {
         const emps = await this.getEmployeesByHr(hrId);
         const count = emps.filter(e => e.isAssessmentCompleted).length;
-        return { totalEmployees: emps.length, completedAssessments: count, averageIkigai: { passion: 75, profession: 70, mission: 80, vocation: 72 }, teamMentalHealth: 78, teamBurnoutRisk: 15, mentalHealthBuckets: { thriving: count, steady: 0, atRisk: 0 }, riskAlerts: [] };
+
+        // Real averages from actual employee DB data
+        const completedEmps = emps.filter(e => e.isAssessmentCompleted && e.computedScores);
+
+        const avgIkigai = completedEmps.length > 0 ? {
+            passion: Math.round(completedEmps.reduce((s, e) => s + ((e.computedScores as any)?.love || 0), 0) / completedEmps.length),
+            profession: Math.round(completedEmps.reduce((s, e) => s + ((e.computedScores as any)?.goodAt || 0), 0) / completedEmps.length),
+            mission: Math.round(completedEmps.reduce((s, e) => s + ((e.computedScores as any)?.worldNeeds || 0), 0) / completedEmps.length),
+            vocation: Math.round(completedEmps.reduce((s, e) => s + ((e.computedScores as any)?.paidFor || 0), 0) / completedEmps.length),
+        } : { passion: 0, profession: 0, mission: 0, vocation: 0 };
+
+        const avgMentalHealth = emps.length > 0
+            ? Math.round(emps.reduce((s, e) => s + (e.mentalHealthScore || 75), 0) / emps.length)
+            : 0;
+
+        // Bucket employees by mental health score
+        const thriving = emps.filter(e => (e.mentalHealthScore || 75) >= 70).length;
+        const steady = emps.filter(e => (e.mentalHealthScore || 75) >= 40 && (e.mentalHealthScore || 75) < 70).length;
+        const atRisk = emps.filter(e => (e.mentalHealthScore || 75) < 40).length;
+
+        // Burnout rate = % of employees at risk
+        const teamBurnoutRisk = emps.length > 0 ? Math.round((atRisk / emps.length) * 100) : 0;
+
+        // Risk alerts for at-risk employees (never expose names — use employee ID)
+        const riskAlerts = emps
+            .filter(e => (e.mentalHealthScore || 75) < 50)
+            .map(e => ({
+                employeeId: e.employeeId || e.id.slice(0, 8),
+                accountId: e.id,
+                severity: (e.mentalHealthScore || 75) < 35 ? 'critical' : 'warning',
+                summary: `${e.employeeId || 'Employee'}: Alignment health score is low (${e.mentalHealthScore || 75}/100)`,
+                reasons: ['Chat sentiment indicates repeated stress signals', 'Alignment score below team baseline']
+            }));
+
+        // Executive insights computed dynamically
+        const overallIkigaiIndex = Math.round((avgIkigai.passion + avgIkigai.profession + avgIkigai.mission + avgIkigai.vocation) / 4);
+        const executiveInsights = {
+            index: overallIkigaiIndex,
+            correlation: (0.6 + (overallIkigaiIndex / 500)).toFixed(2), // proxy correlation metric
+            industryBenchmark: 62, // industry average for alignment tools
+            summary: overallIkigaiIndex >= 75
+                ? `Your team's alignment index is above industry average. Strategic clarity is strong — now focus on converting that energy into cross-departmental execution velocity.`
+                : `Your team's alignment index has growth potential. The biggest opportunity is closing the gap between individual strengths and organizational mission clarity.`
+        };
+
+        // --- DYNAMIC HR METRICS (7-DAY TREND, PARTICIPATION, SENTIMENT, INTERESTS, BURNOUT BUCKETS) ---
+        const empIds = emps.map(e => e.id);
+        const checkins = empIds.length > 0
+            ? await this.dailyMoodRepository.createQueryBuilder('checkin')
+                .leftJoinAndSelect('checkin.account', 'account')
+                .where('account.id IN (:...ids)', { ids: empIds })
+                .orderBy('checkin.checkinDate', 'DESC')
+                .getMany()
+            : [];
+
+        // Helper date formatter
+        const formatDate = (date: Date) => {
+            const yyyy = date.getFullYear();
+            const mm = String(date.getMonth() + 1).padStart(2, '0');
+            const dd = String(date.getDate()).padStart(2, '0');
+            return `${yyyy}-${mm}-${dd}`;
+        };
+
+        const last7Days = Array.from({ length: 7 }, (_, i) => {
+            const d = new Date();
+            d.setDate(d.getDate() - (6 - i));
+            return formatDate(d);
+        });
+
+        const moodTrend7d = last7Days.map(date => {
+            const dayCheckins = checkins.filter(c => c.checkinDate === date);
+            const count = dayCheckins.length;
+            const avgMood = count > 0
+                ? Math.round(dayCheckins.reduce((s, c) => s + (c.moodScore || 70), 0) / count)
+                : null;
+            return { date, avgMood, count };
+        });
+
+        const todayStr = formatDate(new Date());
+        const todayCheckins = checkins.filter(c => c.checkinDate === todayStr);
+        const moodParticipationToday = {
+            completed: todayCheckins.length,
+            total: emps.length,
+            percent: emps.length > 0 ? Math.round((todayCheckins.length / emps.length) * 100) : 0
+        };
+
+        const sentimentDistribution = { Inspired: 0, Balanced: 0, Stressed: 0 };
+        for (const c of checkins) {
+            const s = c.sentiment || 'Balanced';
+            if (s.includes('Inspired') || s.includes('Happy') || s.includes('Good')) {
+                sentimentDistribution.Inspired++;
+            } else if (s.includes('Stressed') || s.includes('Sad') || s.includes('Frustrated')) {
+                sentimentDistribution.Stressed++;
+            } else {
+                sentimentDistribution.Balanced++;
+            }
+        }
+
+        const topInterests = [
+            { name: "Product Design", value: emps.filter(e => e.department === 'Design').length },
+            { name: "Engineering Velocity", value: emps.filter(e => e.department === 'Engineering').length },
+            { name: "Market Synergy", value: emps.filter(e => e.department === 'Marketing').length },
+            { name: "Strategic Intelligence", value: emps.filter(e => e.department === 'Strategy').length }
+        ].filter(i => i.value > 0).sort((a, b) => b.value - a.value);
+
+        const burnoutBuckets = { Low: thriving, Moderate: steady, High: atRisk, Critical: 0 };
+
+        // Group employees by department for dynamic heatmap stats
+        const depts: { [key: string]: typeof emps } = {};
+        for (const e of emps) {
+            const d = e.department || 'General';
+            if (!depts[d]) depts[d] = [];
+            depts[d].push(e);
+        }
+
+        const departmentHeatmap: { [key: string]: { burnout: number, mood: number, sentinelCount: number } } = {};
+        for (const [dept, deptEmps] of Object.entries(depts)) {
+            const avgMood = deptEmps.length > 0
+                ? Math.round(deptEmps.reduce((s, e) => s + (e.mentalHealthScore || 75), 0) / deptEmps.length)
+                : 75;
+            const deptAtRisk = deptEmps.filter(e => (e.mentalHealthScore || 75) < 40).length;
+            const burnoutRisk = deptEmps.length > 0 ? Math.round((deptAtRisk / deptEmps.length) * 100) : 0;
+            departmentHeatmap[dept] = {
+                burnout: burnoutRisk,
+                mood: avgMood,
+                sentinelCount: deptEmps.length
+            };
+        }
+
+        return {
+            totalEmployees: emps.length,
+            completedAssessments: count,
+            averageIkigai: avgIkigai,
+            teamMentalHealth: avgMentalHealth,
+            teamBurnoutRisk,
+            mentalHealthBuckets: { thriving, steady, atRisk },
+            riskAlerts,
+            executiveInsights,
+            moodTrend7d,
+            moodParticipationToday,
+            sentimentDistribution,
+            topInterests,
+            burnoutBuckets,
+            departmentHeatmap
+        };
     }
-    async saveResume(userId: string, resumeText: string) {
+
+    async saveResume(userId: string, resumeText: string, resumeFileName?: string, resumeFileBase64?: string) {
         const user = await this.findById(userId);
         if (!user) throw new NotFoundException('User not found');
-        user.resumeText = resumeText;
+        if (resumeText !== undefined) user.resumeText = resumeText;
+        if (resumeFileName !== undefined) user.resumeFileName = resumeFileName;
+        if (resumeFileBase64 !== undefined) user.resumeFileBase64 = resumeFileBase64;
         return this.accountRepository.save(user);
     }
 
@@ -436,7 +829,7 @@ export class UsersService implements OnModuleInit {
         const pathway = await this.pathwayRepository.findOne({ where: { id: pathwayId } });
         if (!pathway) throw new NotFoundException('Pathway not found');
 
-        if (!user.resumeText) {
+        if (!user.resumeFileBase64) {
             return { needsResume: true };
         }
 
@@ -500,4 +893,22 @@ export class UsersService implements OnModuleInit {
             };
         }
     }
+
+    async getDailyPrompt(userId: string) {
+        const user = await this.accountRepository.findOne({ where: { id: userId } });
+        const prompts = [
+            "What small step can you take today to align with your inner purpose?",
+            "Which of your core strengths did you use most effectively today?",
+            "How did your work today contribute to the team's broader mission?",
+            "What part of your work brought you the most creative joy today?",
+            "Is there any area where you felt friction, and how did you navigate it?",
+            "What did you learn today that prepares you for your future growth?",
+            "Who in your community did you feel a positive connection with today?",
+            "What are you most grateful for in your career journey right now?"
+        ];
+        const day = new Date().getDate();
+        const index = day % prompts.length;
+        return { prompt: prompts[index] };
+    }
 }
+

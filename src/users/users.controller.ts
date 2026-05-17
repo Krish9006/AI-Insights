@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Put, Delete, Body, UseGuards, Request, Param } from '@nestjs/common';
+import { Controller, Post, Get, Put, Delete, Body, UseGuards, Request, Param, Res } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -35,6 +35,11 @@ export class UsersController {
     @Roles(Role.HR)
     @Get('hr/team-stats')
     async getHrStats(@Request() req) { return this.usersService.getHrTeamStats(req.user.id); }
+
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(Role.HR)
+    @Get('hr/session-intelligence')
+    async getSessionIntelligence(@Request() req) { return this.usersService.getHrSessionIntelligence(req.user.id); }
 
     @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles(Role.HR)
@@ -97,8 +102,11 @@ export class UsersController {
 
     @UseGuards(JwtAuthGuard)
     @Post('chat')
-    async getAiResponse(@Request() req, @Body() body: any) {
-        return this.usersService.getAiCoachingResponse(req.user.id, body.messages);
+    async getAiResponse(@Request() req, @Body() body: any, @Res() res) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        await this.usersService.getAiCoachingResponse(req.user.id, body.messages, res);
     }
 
     @UseGuards(JwtAuthGuard)
@@ -136,12 +144,26 @@ export class UsersController {
     async deleteChatSession(@Param('id') id: string) { await this.usersService.deleteChatSession(id, ""); return { success: true }; }
 
     @UseGuards(JwtAuthGuard)
+    @Put('chat/rename/:id')
+    async renameChatSession(@Param('id') id: string, @Body() body: any) { 
+        return this.usersService.renameChatSession(id, body.title); 
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @Get('daily-prompt')
+    async getDailyPrompt(@Request() req) { return this.usersService.getDailyPrompt(req.user.id); }
+
+    @UseGuards(JwtAuthGuard)
     @Get('mood-checkin/today')
     async getMoodToday(@Request() req) { return this.usersService.getTodayMoodCheckin(req.user.id); }
 
     @UseGuards(JwtAuthGuard)
     @Post('streak/update')
     async updateStreak(@Request() req) { return this.usersService.updateStreak(req.user.id); }
+
+    @UseGuards(JwtAuthGuard)
+    @Post('complete-tour')
+    async completeTour(@Request() req) { return this.usersService.completeTour(req.user.id); }
 
     @UseGuards(JwtAuthGuard)
     @Post('mood-checkin')
@@ -161,5 +183,7 @@ export class UsersController {
 
     @UseGuards(JwtAuthGuard)
     @Post('resume')
-    async saveResume(@Request() req, @Body() body: any) { return this.usersService.saveResume(req.user.id, body.resumeText); }
+    async saveResume(@Request() req, @Body() body: any) { 
+        return this.usersService.saveResume(req.user.id, body.resumeText, body.resumeFileName, body.resumeFileBase64); 
+    }
 }

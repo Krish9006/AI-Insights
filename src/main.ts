@@ -14,6 +14,6 @@ async function bootstrap() {
     credentials: true,
   });
 
-  await app.listen(process.env.PORT ?? 5000); // Usually production depends on PORT env var, but locally frontend used 5000 before
+  await app.listen(process.env.PORT ?? 5001); // Switched to 5001 to avoid ghost process on 5000
 }
 bootstrap();

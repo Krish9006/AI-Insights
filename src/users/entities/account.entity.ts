@@ -49,6 +49,9 @@ export class Account {
     @Column({ default: false })
     isAssessmentCompleted: boolean;
 
+    @Column({ default: false })
+    hasCompletedTour: boolean;
+
     @Column({ default: 75 })
     mentalHealthScore: number;
 
@@ -63,6 +66,19 @@ export class Account {
 
     @Column({ type: 'text', nullable: true })
     resumeText: string;
+
+    @Column({ type: 'text', nullable: true })
+    resumeFileName?: string;
+
+    @Column({ type: 'text', nullable: true })
+    resumeFileBase64?: string;
+
+    // Raw Ikigai assessment Q&A — stored so the AI chatbot can reference specific answers
+    @Column({ type: 'jsonb', nullable: true })
+    assessmentAnswers: {
+        mcqAnswers: Record<string, number>;
+        freeTextAnswers: Record<string, string>;
+    } | null;
 
     // Relationship: The HR who created this user
     @ManyToOne(() => Account, { nullable: true })

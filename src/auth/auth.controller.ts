@@ -18,4 +18,10 @@ export class AuthController {
     async login(@Body() loginDto: LoginDto) {
         return this.authService.login(loginDto);
     }
+
+    @Post('waitlist')
+    @HttpCode(HttpStatus.CREATED)
+    async joinWaitlist(@Body() body: { email: string; companyName?: string; teamSize?: string }) {
+        return this.authService.joinWaitlist(body.email, body.companyName, body.teamSize);
+    }
 }

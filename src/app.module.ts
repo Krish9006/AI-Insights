@@ -12,6 +12,7 @@ import { ChatSession } from './users/entities/chat-session.entity';
 import { Pathway } from './users/entities/pathway.entity';
 import { DirectMessage } from './users/entities/direct-message.entity';
 import { GrowthStory } from './users/entities/growth-story.entity';
+import { WaitlistEntry } from './users/entities/waitlist.entity';
 
 @Module({
   imports: [
@@ -27,7 +28,7 @@ import { GrowthStory } from './users/entities/growth-story.entity';
         return {
           type: 'postgres' as const,
           url: configService.get<string>('DATABASE_URL'),
-          entities: [Account, DailyMoodCheckin, ChatSession, Pathway, DirectMessage, GrowthStory],
+          entities: [Account, DailyMoodCheckin, ChatSession, Pathway, DirectMessage, GrowthStory, WaitlistEntry],
           synchronize,
           ...(useSsl
             ? {
