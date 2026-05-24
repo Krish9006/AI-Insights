@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { pinecone, getIndex } from '@/utils/clients';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req) {
   try {
     const { contents } = await req.json();
