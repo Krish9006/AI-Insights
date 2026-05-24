@@ -1,49 +1,54 @@
 import { NextResponse } from 'next/server';
-import { pinecone, groq, getIndex } from '@/utils/clients';
+import { groq } from '@/utils/clients';
 
 export async function POST(req) {
   try {
-    const insightQuery = "main topics, themes, and key takeaways";
-    
-    const embeddingResponse = await pinecone.inference.embed({
-      model: "multilingual-e5-large",
-      inputs: [insightQuery],
-      parameters: { inputType: "query", truncate: "END" }
-    });
-    
-    const queryEmbedding = embeddingResponse.data[0].values;
+    const { topic } = await req.json();
 
-    const index = getIndex();
-    const queryResult = await index.query({
-      vector: queryEmbedding,
-      topK: 10,
-      includeMetadata: true,
-    });
-
-    const contexts = queryResult.matches.map(match => match.metadata.text);
-    const contextString = contexts.join('\n\n---\n\n');
-
-    if (!contextString) {
-      return NextResponse.json({ error: 'No content found to generate insights. Please upload content first.' }, { status: 400 });
+    if (!topic) {
+      return NextResponse.json({ error: 'Please provide a topic to generate insights.' }, { status: 400 });
     }
 
-    const prompt = `You are an expert content strategist. Analyze the provided content and generate a structured JSON response with insights.
+    const apiKey = process.env.NEWSDATA_API_KEY;
+    const newsUrl = `https://newsdata.io/api/1/news?apikey=${apiKey}&q=${encodeURIComponent(topic)}&language=en`;
     
-Based on the following content, generate:
-1. Key Topics (an array of 3-5 main topics covered)
-2. New Content Ideas (an array of 3 creative ideas for future blog posts based on this content)
-3. CTA Suggestions (an array of 3 Call-To-Action ideas for the current content)
+    const newsResponse = await fetch(newsUrl);
+    const newsData = await newsResponse.json();
 
-Return ONLY a valid JSON object with the keys "keyTopics", "newContentIdeas", and "ctaSuggestions". Do not include any other text or markdown formatting.
+    if (!newsData.results || newsData.results.length === 0) {
+      return NextResponse.json({ error: `No live news found for the topic: ${topic}` }, { status: 404 });
+    }
 
-Content:
-${contextString}
+    // Prepare context from news and extract sources
+    const sources = [];
+    const newsContextString = newsData.results.slice(0, 5).map(article => {
+      // Collect sources to return to the user
+      sources.push({
+        title: article.title,
+        publisher: article.source_id || 'News Source',
+        url: article.link
+      });
+      return `Title: ${article.title}\nDescription: ${article.description || article.content}\nPublisher: ${article.source_id}`;
+    }).join('\n\n---\n\n');
+
+    const prompt = `You are a premium AI news analyst. Analyze the following real-time news articles about "${topic}" and generate a highly structured JSON response.
+    
+Based on the news content, generate:
+1. "executiveSummary": A professional, concise 2-3 sentence overview of the current situation.
+2. "keyTopics": An array of 3-5 main topics or trends discussed in the news.
+3. "metrics": An array of numerical data, percentages, or statistics mentioned in the text. Format each item exactly like this: { "label": "Growth Rate", "value": 25, "unit": "%" }. If no exact numbers exist, infer reasonable dummy metrics based on the sentiment for demonstration purposes.
+4. "ctaSuggestions": An array of 3 strategic recommendations for a business or investor based on this news.
+
+Return ONLY a valid JSON object. Do not include any markdown formatting or extra text.
+
+Live News Content:
+${newsContextString}
 `;
 
     const completion = await groq.chat.completions.create({
       messages: [{ role: 'user', content: prompt }],
       model: 'llama-3.3-70b-versatile',
-      temperature: 0.7,
+      temperature: 0.5,
       response_format: { type: "json_object" }, 
     });
 
@@ -54,12 +59,15 @@ ${contextString}
       insights = JSON.parse(responseContent);
     } catch (e) {
       console.error("Failed to parse JSON from Groq:", responseContent);
-      insights = { error: "Failed to generate structured insights." };
+      return NextResponse.json({ error: "Failed to generate structured insights from news." }, { status: 500 });
     }
+
+    // Attach the sources to the final response
+    insights.sources = sources;
 
     return NextResponse.json({ insights });
   } catch (error) {
-    console.error('Error generating insights:', error);
+    console.error('Error generating live insights:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
