@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { pinecone, groq, getIndex } from '@/utils/clients';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req) {
   try {
     const { question } = await req.json();

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { groq } from '@/utils/clients';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req) {
   try {
     const { topic } = await req.json();
