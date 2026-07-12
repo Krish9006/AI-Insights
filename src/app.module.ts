@@ -6,6 +6,7 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { Account } from './users/entities/account.entity';
+import { GrowthEngineModule } from './growth-engine/growth-engine.module';
 
 import { DailyMoodCheckin } from './users/entities/daily-mood-checkin.entity';
 import { ChatSession } from './users/entities/chat-session.entity';
@@ -46,6 +47,7 @@ import { WaitlistEntry } from './users/entities/waitlist.entity';
     }),
     AuthModule,
     UsersModule,
+    GrowthEngineModule,
   ],
   controllers: [AppController],
   providers: [AppService],
